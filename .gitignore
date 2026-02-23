@@ -1,0 +1,25 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual env
+.venv/
+venv/
+
+# Spark / Delta / checkpoints
+delta/
+_checkpoints*/
+.spark_tmp/
+
+# Secrets / configs
+config.yaml
+.env
+.env.*
+secrets.*

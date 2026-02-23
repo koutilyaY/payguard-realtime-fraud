@@ -1,0 +1,77 @@
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: payguard-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: payguard-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
+
+  # Expose docker/container CPU/mem
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: payguard-cadvisor
+    ports:
+      - "8082:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    restart: unless-stopped
+
+  # Kafka consumer lag / topic metrics
+  kafka_exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: payguard-kafka-exporter
+    command:
+      - --kafka.server=docker-kafka-1:29092
+    ports:
+      - "9308:9308"
+    restart: unless-stopped
+
+  # Postgres health + metrics
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: payguard-postgres-exporter
+    environment:
+      - DATA_SOURCE_NAME=postgresql://payguard:payguard@docker-postgres-1:5432/payguard?sslmode=disable
+    ports:
+      - "9187:9187"
+    restart: unless-stopped
+
+  # Redis health + metrics
+  redis_exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: payguard-redis-exporter
+    environment:
+      - REDIS_ADDR=redis://docker-redis-1:6379
+    ports:
+      - "9121:9121"
+    restart: unless-stopped
+
+  # For app-level metrics push (Spark/Delta counts)
+  pushgateway:
+    image: prom/pushgateway:latest
+    container_name: payguard-pushgateway
+    ports:
+      - "9091:9091"
+    restart: unless-stopped
+
+volumes:
+  grafana_data:

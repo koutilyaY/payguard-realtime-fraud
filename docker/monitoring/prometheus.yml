@@ -1,0 +1,28 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["payguard-prometheus:9090"]
+
+  - job_name: "cadvisor"
+    static_configs:
+      - targets: ["payguard-cadvisor:8080"]
+
+  - job_name: "kafka_exporter"
+    static_configs:
+      - targets: ["payguard-kafka-exporter:9308"]
+
+  - job_name: "postgres_exporter"
+    static_configs:
+      - targets: ["payguard-postgres-exporter:9187"]
+
+  - job_name: "redis_exporter"
+    static_configs:
+      - targets: ["payguard-redis-exporter:9121"]
+
+  - job_name: "pushgateway"
+    honor_labels: true
+    static_configs:
+      - targets: ["payguard-pushgateway:9091"]

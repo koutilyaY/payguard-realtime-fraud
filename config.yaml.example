@@ -1,0 +1,51 @@
+kafka:
+  bootstrap_servers: 127.0.0.1:9092
+  topic_raw: txns
+  topic_dlq: txns_dead_letter
+  topic_alerts: txns_alerts
+paths:
+  bronze: delta/bronze/txns_v1
+  silver: delta/silver/txns_clean_v1
+  gold_features: delta/gold/user_risk_features_v1
+  dq_results: delta/gold/dq_results_v1
+  dlq_delta: delta/bronze/dead_letter_v1
+  stream_metrics: delta/gold/stream_metrics_v1
+  checkpoints: delta/_checkpoints_v1
+streaming:
+  trigger: 10 seconds
+  watermark: 5 minutes
+  window: 1 minute
+rules:
+  risk_threshold_alert: 0.7
+  max_amount: 50000
+  currency_allowed:
+  - USD
+  countries_allowed:
+  - US
+  - CA
+  - IN
+  - GB
+  - DE
+  - BR
+  - NG
+  categories_allowed:
+  - retail
+  - digital_goods
+  - travel
+  - gaming
+  - crypto
+  - giftcards
+redis:
+  host: localhost
+  port: 6379
+  ttl_seconds: 86400
+postgres:
+  host: 127.0.0.1
+  port: 5433
+  db: payguard
+  user: payguard
+  password: CHANGE_ME
+producer:
+  events_per_second: 50
+  sleep_seconds: 0.05
+  edge_case_rate: 0.08
