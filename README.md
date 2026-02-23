@@ -23,21 +23,27 @@ Observability of system health and fraud KPIs
 PayGuard implements all of the above in a modular, production-inspired architecture.
 
 Transaction Producer
-        ↓
+        │
+        ▼
       Kafka
-        ↓
+        │
+        ▼
 Spark Structured Streaming
-        ↓
-   Delta Lake (Lakehouse)
-  ┌──────────┬──────────┬──────────┐
-  │ Bronze   │ Silver   │ Gold     │
-  │ Raw      │ Cleaned  │ Business │
-  └──────────┴──────────┴──────────┘
-        ↓
-  Redis (Low-Latency Serving)
-        ↓
-PostgreSQL (Fraud Case Management)
-        ↓
+        │
+        ▼
+     Delta Lake
+   ┌────────────┬────────────┬────────────┐
+   │   Bronze   │   Silver   │    Gold    │
+   │    Raw     │   Cleaned  │  Business  │
+   └────────────┴────────────┴────────────┘
+        │
+        ▼
+      Redis  (Low-Latency Risk Serving)
+        │
+        ▼
+  PostgreSQL (Fraud Case Management)
+        │
+        ▼
 Prometheus → Pushgateway → Grafana
 
 ⚙️ Tech Stack
@@ -150,23 +156,18 @@ Append-only log of REVIEW decisions
 Audit-friendly
 
 Traceable by timestamp
+
 🧠 Risk Scoring Logic
 
 Window-based risk formula:
-
 risk_score =
   0.55 * avg(ip_risk_score)
 + 0.25 * velocity_component
 + 0.20 * amount_component
 
 Decision logic:
-
 REVIEW if risk_score >= risk_threshold_alert
 ALLOW otherwise
-
-Threshold configurable via config.yaml.
-
-📊 Observability & Metrics
 
 The pipeline exports real-time metrics to Prometheus.
 
@@ -212,6 +213,7 @@ Streaming Throughput
 
 🚦 How to Run Locally
 1️⃣ Start Infrastructure
+
 make up-all
 
 This launches:
@@ -231,22 +233,23 @@ Pushgateway
 Grafana
 
 2️⃣ Start Streaming Pipeline
+
 make stream
+
 3️⃣ Start Transaction Producer
+
 make producer
+
 4️⃣ Access Dashboards
-
-Grafana:
-
+Grafana
 http://localhost:3000
 
-Prometheus:
-
+Prometheus
 http://localhost:9090
 
-Pushgateway:
-
+Pushgateway
 http://localhost:9091
+
 📈 Example Production Snapshot
 
 Bronze rows: 300K+
@@ -271,7 +274,7 @@ Separation of feature log vs serving table
 
 Metrics-first engineering approach
 
-No toy dashboards — production-style observability
+Production-style observability
 
 Failure isolation with DLQ
 
@@ -289,8 +292,6 @@ Metric sampling to reduce performance impact
 
 🏆 What This Project Demonstrates
 
-This project showcases:
-
 Real-time stream processing
 
 Lakehouse architecture design
@@ -304,3 +305,8 @@ Observability-driven engineering
 Production-style container orchestration
 
 Business KPI integration into streaming pipelines
+
+👤 Author
+
+Koutilya Yenumula
+Real-Time Data Engineering | Streaming Systems | Lakehouse Architectures
