@@ -1,3 +1,16 @@
+<p align="center">
+
+<img src="https://img.shields.io/badge/Streaming-Kafka-black?style=for-the-badge&logo=apachekafka" />
+<img src="https://img.shields.io/badge/Processing-Spark-orange?style=for-the-badge&logo=apachespark" />
+<img src="https://img.shields.io/badge/Lakehouse-Delta_Lake-blue?style=for-the-badge&logo=databricks" />
+<img src="https://img.shields.io/badge/Serving-Redis-red?style=for-the-badge&logo=redis" />
+<img src="https://img.shields.io/badge/Database-PostgreSQL-blue?style=for-the-badge&logo=postgresql" />
+<img src="https://img.shields.io/badge/Monitoring-Prometheus-E6522C?style=for-the-badge&logo=prometheus" />
+<img src="https://img.shields.io/badge/Dashboard-Grafana-F46800?style=for-the-badge&logo=grafana" />
+<img src="https://img.shields.io/badge/Containerized-Docker-2496ED?style=for-the-badge&logo=docker" />
+
+</p>
+
 # 🚀 PayGuard — Real-Time Fraud Detection Platform
 
 A production-style, end-to-end **real-time fraud detection system** built using Kafka, Spark Structured Streaming, Delta Lake, Redis, PostgreSQL, Prometheus, and Grafana.
