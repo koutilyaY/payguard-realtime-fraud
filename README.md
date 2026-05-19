@@ -10,7 +10,7 @@
 
 ## 🎯 Quick Links
 
-- **[Live Dashboard]([https://payguard-demo.streamlit.app](https://payguard-realtime-fraud-mmj5yjucgd9ekrl7dkfmoi.streamlit.app)** - Interactive metrics & simulations
+- **[Live Dashboard](https://payguard-realtime-fraud-mmj5yjucgd9ekrl7dkfmoi.streamlit.app)** - Interactive metrics & simulations
 - **[GitHub Repository](https://github.com/koutilyaY/payguard-realtime-fraud)**
 - **[Architecture](#-architecture)** - System design & data flow
 - **[Quick Start](#-quick-start)** - Local setup in 5 minutes
