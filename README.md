@@ -35,7 +35,6 @@ We built PayGuard because we needed a system that:
 - Maintains **precision** (customers don't get blocked for normal behavior)
 - Costs **less than the fraud it prevents** ($0.25 per 1M events vs $12.50 at competitors)
 - Runs **without vendor lock-in** (open source, deployable anywhere)
->>>>>>> Stashed changes
 
 ---
 
