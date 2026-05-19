@@ -17,7 +17,6 @@ PayGuard is a production-grade real-time fraud detection platform designed for p
 
 ## The Problem
 
-<<<<<<< Updated upstream
 - **[Live Dashboard](https://payguard-realtime-fraud-mmj5yjucgd9ekrl7dkfmoi.streamlit.app)** - Interactive metrics & simulations
 - **[GitHub Repository](https://github.com/koutilyaY/payguard-realtime-fraud)**
 - **[Architecture](#-architecture)** - System design & data flow
