@@ -17,12 +17,6 @@ PayGuard is a production-grade real-time fraud detection platform designed for p
 
 ## The Problem
 
-- **[Live Dashboard](https://payguard-realtime-fraud-mmj5yjucgd9ekrl7dkfmoi.streamlit.app)** - Interactive metrics & simulations
-- **[GitHub Repository](https://github.com/koutilyaY/payguard-realtime-fraud)**
-- **[Architecture](#-architecture)** - System design & data flow
-- **[Quick Start](#-quick-start)** - Local setup in 5 minutes
-- **[Deployment](#-deployment)** - Production deployment guide
-=======
 Card fraud costs the financial industry **$11.15 billion annually**. Traditional fraud detection systems fail because they choose between three impossible options:
 
 1. **Batch detection** (6-24 hour latency) — By the time fraud is flagged, $50K in damage is done
@@ -511,7 +505,6 @@ MIT License — You're free to use, modify, and deploy PayGuard anywhere.
 ---
 
 <p align="center">
-<<<<<<< Updated upstream
   <strong>PayGuard • Real-Time Fraud Detection • Production Ready</strong><br>
   <sub>Sub-7ms latency • AUC-ROC 1.0 • 99.9% uptime • 4,708 users</sub>
 </p>
@@ -520,4 +513,3 @@ MIT License — You're free to use, modify, and deploy PayGuard anywhere.
   <sub>Real-time fraud detection. Sub-7ms latency. Open source. Production ready.</sub><br>
   <sub>3.1ms P50 • 6.7ms P99 • AUC-ROC 1.0 • 99.9% uptime • 4,708 users • $0.25 per 1M events</sub>
 </p>
->>>>>>> Stashed changes
