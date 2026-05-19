@@ -88,9 +88,9 @@ with st.sidebar:
     with col1:
         st.markdown("[GitHub](https://github.com/koutilyaY/payguard-realtime-fraud)")
     with col2:
-        st.markdown("[Docs](https://github.com/koutilyaY/payguard-realtime-fraud#-architecture)")
+        st.markdown("[Docs](https://github.com/koutilyaY/payguard-realtime-fraud#architecture)")
     with col3:
-        st.markdown("[API](https://github.com/koutilyaY/payguard-realtime-fraud#-api-documentation)")
+        st.markdown("[API](https://github.com/koutilyaY/payguard-realtime-fraud#api-documentation)")
     
     st.divider()
     
@@ -103,6 +103,8 @@ with st.sidebar:
     **Region:** AWS us-east-1
     
     **Version:** v4 (MLflow tracked)
+    
+    **Model:** LightGBM
     """)
 
 # ===========================
@@ -650,7 +652,7 @@ with col3:
     
     [Full Docs](https://github.com/koutilyaY/payguard-realtime-fraud#readme)
     
-    [API Reference](https://github.com/koutilyaY/payguard-realtime-fraud#-api-documentation)
+    [API Reference](https://github.com/koutilyaY/payguard-realtime-fraud#api-documentation)
     """)
 
 st.markdown("""

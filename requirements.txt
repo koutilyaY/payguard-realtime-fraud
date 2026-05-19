@@ -1,3 +1,10 @@
+faker==19.13.0
+confluent-kafka==2.3.0
+delta-spark==3.2.0
+redis==5.0.1
+lightgbm>=4.3.0
+mlflow>=2.13.0
+scikit-learn>=1.4.0
 a2wsgi==1.10.10
 aiosmtplib==5.0.0
 aiosqlite==0.21.0

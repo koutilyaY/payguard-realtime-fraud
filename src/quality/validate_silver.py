@@ -8,6 +8,8 @@ from typing import Optional
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, desc
 
+from src.quality.write_dq_results import write_dq
+
 
 def run(cmd: str) -> str:
     """Run a shell command and return stdout (best-effort)."""
@@ -169,6 +171,26 @@ def main():
     # ---- Streaming progress (checkpoints) ----
     print("\n=== Checkpoint folders (quick progress sanity) ===")
     print(run(f'find "{CHECKPOINTS}" -maxdepth 2 -type d | sed "s|^{CHECKPOINTS}||" | head -50'))
+
+    # ---- Write DQ results to Delta ----
+    DQ_PATH = os.getenv("DQ_RESULTS", "delta/gold/dq_results_v1")
+    total = sum(1 for n in [bronze_n, silver_n, gold_n, dlq_n] if n >= 0)
+    passing = sum(1 for n in [bronze_n, silver_n, gold_n, dlq_n] if n > 0)
+    dq_results = {
+        "success": passing == total,
+        "statistics": {
+            "evaluated_expectations": total,
+            "successful_expectations": passing,
+            "unsuccessful_expectations": total - passing,
+            "success_percent": (passing / total * 100.0) if total > 0 else 0.0,
+        },
+        "meta": {"validation_id": f"validate_silver_{int(time.time())}"},
+    }
+    try:
+        write_dq(spark, DQ_PATH, suite_name="validate_silver", layer="silver", results=dq_results)
+        print(f"\nDQ results written to: {DQ_PATH}")
+    except Exception as e:
+        print(f"\nWarning: could not write DQ results: {e}")
 
     spark.stop()
     print("\nDone.\n")

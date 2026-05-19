@@ -1,0 +1,89 @@
+groups:
+  - name: payguard_kafka
+    rules:
+      # Fire when any consumer group is more than 1000 messages behind.
+      # Sustained lag means the Spark pipeline is too slow or has stalled.
+      - alert: KafkaConsumerLagHigh
+        expr: sum(kafka_consumergroup_lag) by (consumergroup, topic) > 1000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High consumer lag: {{ $labels.consumergroup }} on {{ $labels.topic }}"
+          description: >
+            Consumer group {{ $labels.consumergroup }} is {{ $value }} messages behind
+            on topic {{ $labels.topic }}. Fraud decisions may be delayed.
+
+      # Critical: lag above 5000 means the pipeline is severely behind.
+      - alert: KafkaConsumerLagCritical
+        expr: sum(kafka_consumergroup_lag) by (consumergroup, topic) > 5000
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical consumer lag: {{ $labels.consumergroup }} on {{ $labels.topic }}"
+          description: >
+            Consumer group {{ $labels.consumergroup }} has a lag of {{ $value }} on
+            topic {{ $labels.topic }}. Real-time fraud detection is significantly impaired.
+
+  - name: payguard_streaming
+    rules:
+      # Spark micro-batch is taking longer than 5 seconds — risk of lag buildup.
+      - alert: SparkBatchDurationHigh
+        expr: spark_batch_duration_ms > 5000
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Spark batch duration above 5s"
+          description: "Spark micro-batch is taking {{ $value }}ms. With a 1s trigger, this will cause lag."
+
+      # No data processed for 2 minutes — pipeline may have crashed.
+      - alert: SparkPipelineStalled
+        expr: rate(spark_num_input_rows[2m]) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PayGuard Spark pipeline is not processing data"
+          description: "No input rows received in the last 2 minutes. Pipeline may have crashed."
+
+  - name: payguard_fraud
+    rules:
+      # Fraud rate above 30% is suspicious — could indicate bad data or model drift.
+      - alert: FraudRateAnomalouslyHigh
+        expr: fraud_rate > 0.30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fraud review rate is unusually high ({{ $value | humanizePercentage }})"
+          description: >
+            Over 30% of scored windows are flagged REVIEW. This may indicate model drift,
+            a data quality issue, or a real fraud wave. Investigate immediately.
+
+      # Fraud rate suddenly drops to zero — model may have stopped scoring.
+      - alert: FraudRateDroppedToZero
+        expr: fraud_total_records > 100 and fraud_rate == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fraud review rate dropped to zero despite active traffic"
+          description: >
+            PayGuard is processing transactions but flagging none for review.
+            The model or threshold config may be misconfigured.
+
+  - name: payguard_dlq
+    rules:
+      # DLQ growing fast means bad data is arriving — producer or upstream schema issue.
+      - alert: DLQVolumeHigh
+        expr: increase(dlq_total_rows[10m]) > 500
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dead Letter Queue growing rapidly"
+          description: >
+            {{ $value }} records added to the DLQ in the last 10 minutes.
+            Check producer schema or upstream data quality.

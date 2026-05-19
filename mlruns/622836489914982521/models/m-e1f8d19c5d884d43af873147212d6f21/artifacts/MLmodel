@@ -1,0 +1,23 @@
+artifact_path: file:///Users/koutilyayenumula/payguard-realtime-fraud/mlruns/622836489914982521/models/m-e1f8d19c5d884d43af873147212d6f21/artifacts
+flavors:
+  lightgbm:
+    code: null
+    data: model.lgb
+    lgb_version: 4.6.0
+    model_class: lightgbm.basic.Booster
+    serialization_format: cloudpickle
+    skops_trusted_types: null
+  python_function:
+    data: model.lgb
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.lightgbm
+    python_version: 3.11.9
+mlflow_version: 3.12.0
+model_id: m-e1f8d19c5d884d43af873147212d6f21
+model_size_bytes: 46350
+model_uuid: m-e1f8d19c5d884d43af873147212d6f21
+prompts: null
+run_id: 54f23bcc60534f51a5cf568de97c17cc
+utc_time_created: '2026-05-16 16:39:48.402684'

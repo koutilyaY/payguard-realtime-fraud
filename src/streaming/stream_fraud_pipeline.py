@@ -1,6 +1,9 @@
 import json
+import os
+import pickle
 from datetime import datetime, timezone
 
+import pandas as pd
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col,
@@ -25,6 +28,47 @@ from src.utils.config import load_config
 from src.utils.logging import get_logger
 
 logger = get_logger("streaming")
+
+MODEL_PKL_PATH = os.path.join("mlruns", "fraud_model.pkl")
+
+
+def _load_lgb_model():
+    """Load the trained LightGBM model from the local artifact path."""
+    if not os.path.exists(MODEL_PKL_PATH):
+        raise FileNotFoundError(
+            f"Trained model not found at '{MODEL_PKL_PATH}'. "
+            "Run 'make train' first to train and save the model."
+        )
+    with open(MODEL_PKL_PATH, "rb") as f:
+        return pickle.load(f)
+
+
+def _make_fraud_udf(model):
+    """
+    Return a pandas_udf that scores windowed features using the LightGBM model.
+    The model is captured in the closure so it is loaded once on the driver
+    and serialized to each executor (works transparently in local Spark mode).
+    """
+    from pyspark.sql.functions import pandas_udf
+    from pyspark.sql.types import DoubleType as _DoubleType
+
+    @pandas_udf(_DoubleType())
+    def fraud_score(
+        txn_cnt: pd.Series,
+        amt_sum: pd.Series,
+        ip_risk_avg: pd.Series,
+        chargeback_cnt: pd.Series,
+    ) -> pd.Series:
+        X = pd.DataFrame({
+            "txn_cnt": txn_cnt.astype(float),
+            "amt_sum": amt_sum.astype(float),
+            "ip_risk_avg": ip_risk_avg.astype(float),
+            "chargeback_cnt": chargeback_cnt.astype(float),
+        })
+        proba = model.predict_proba(X)[:, 1]
+        return pd.Series(proba.clip(0.0, 1.0))
+
+    return fraud_score
 
 
 # ------------------------- REQUIRED ADD: Prometheus Pushgateway helper -------------------------
@@ -236,6 +280,12 @@ if __name__ == "__main__":
     )
     spark.sparkContext.setLogLevel("WARN")
 
+    # Load the trained LightGBM model and register as a Spark pandas UDF
+    logger.info(f"Loading LightGBM fraud model from {MODEL_PKL_PATH} ...")
+    _lgb_model = _load_lgb_model()
+    fraud_score_udf = _make_fraud_udf(_lgb_model)
+    logger.info("LightGBM model loaded and UDF registered.")
+
     # Schema for incoming JSON
     schema = StructType(
         [
@@ -382,17 +432,16 @@ if __name__ == "__main__":
     )
 
     scored = (
-        features.withColumn(
+        features
+        # LightGBM model replaces the hard-coded weighted formula.
+        # fraud_score_udf returns P(fraud) in [0.0, 1.0] based on the trained model.
+        .withColumn(
             "risk_score",
-            expr(
-                """
-                least(
-                  1.0,
-                  0.55 * ip_risk_avg +
-                  0.25 * least(1.0, txn_cnt / 20.0) +
-                  0.20 * least(1.0, amt_sum / 2000.0)
-                )
-            """
+            fraud_score_udf(
+                col("txn_cnt").cast(DoubleType()),
+                col("amt_sum").cast(DoubleType()),
+                col("ip_risk_avg").cast(DoubleType()),
+                col("chargeback_cnt").cast(DoubleType()),
             ),
         )
         .withColumn(
@@ -480,11 +529,7 @@ if __name__ == "__main__":
         .start()
     )
 
-    # ---- GOLD (3) Business KPIs (daily) ----
-    # Small table for dashboards: daily review volume + rate (based on gold decision).
-    GOLD_KPI_DAILY_PATH = "delta/gold/fraud_kpis_daily_v1"
-
-        # ---- GOLD (3) Business KPIs (daily) via foreachBatch UPSERT ----
+    # ---- GOLD (3) Business KPIs (daily) via foreachBatch UPSERT ----
     # Avoids "global watermark correctness" error by doing KPI aggregation per micro-batch.
     GOLD_KPI_DAILY_PATH = "delta/gold/fraud_kpis_daily_v1"
 

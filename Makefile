@@ -1,4 +1,4 @@
-.PHONY: up down up-all down-all producer stream dq_silver kafka-init
+.PHONY: up down up-all down-all producer stream dq_silver kafka-init api train retrain
 
 # Use the same compose files everywhere (Kafka + Monitoring)
 COMPOSE = docker compose -f docker/docker-compose.yml -f docker/monitoring/docker-compose.monitoring.yml
@@ -37,3 +37,16 @@ stream:
 
 dq_silver:
 	. .venv/bin/activate && python -m src.quality.validate_silver
+
+api:
+	. .venv/bin/activate && PYTHONPATH=. uvicorn src.serving.api:app --host 0.0.0.0 --port 8000
+
+# Train the LightGBM model from scratch on synthetic data and log to MLflow.
+# Must be run before 'make stream' on a fresh environment.
+train:
+	. .venv/bin/activate && PYTHONPATH=. python -m src.ml.train_model
+
+# Retrain using analyst feedback from the cases table + gold features.
+# Run after labeling cases via POST /label/case/{case_id}, then restart 'make stream'.
+retrain:
+	. .venv/bin/activate && PYTHONPATH=. python -m src.ml.retrain

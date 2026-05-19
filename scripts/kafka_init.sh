@@ -2,9 +2,11 @@
 set -euo pipefail
 
 BOOTSTRAP="${KAFKA_BOOTSTRAP:-docker-kafka-1:9092}"
-TOPIC="${TOPIC_NAME:-txns}"
 PARTITIONS="${TOPIC_PARTITIONS:-3}"
 REPLICATION="${TOPIC_REPLICATION:-1}"
+
+# All topics required by the pipeline
+TOPICS=("txns" "txns_dead_letter" "txns_alerts")
 
 echo "Waiting for Kafka at: $BOOTSTRAP ..."
 for i in {1..60}; do
@@ -15,18 +17,28 @@ for i in {1..60}; do
   sleep 2
 done
 
-echo "Ensuring topic '$TOPIC' exists with >= $PARTITIONS partitions"
+ensure_topic() {
+  local topic="$1"
+  echo "Ensuring topic '$topic' exists with >= $PARTITIONS partitions"
+  if kafka-topics --bootstrap-server "$BOOTSTRAP" --describe --topic "$topic" >/dev/null 2>&1; then
+    echo "Topic '$topic' exists. Ensuring partitions..."
+    kafka-topics --bootstrap-server "$BOOTSTRAP" --alter --topic "$topic" --partitions "$PARTITIONS" || true
+  else
+    echo "Creating topic '$topic'..."
+    kafka-topics --bootstrap-server "$BOOTSTRAP" --create \
+      --topic "$topic" \
+      --partitions "$PARTITIONS" \
+      --replication-factor "$REPLICATION"
+  fi
+}
 
-if kafka-topics --bootstrap-server "$BOOTSTRAP" --describe --topic "$TOPIC" >/dev/null 2>&1; then
-  echo "Topic exists. Ensuring partitions..."
-  kafka-topics --bootstrap-server "$BOOTSTRAP" --alter --topic "$TOPIC" --partitions "$PARTITIONS" || true
-else
-  echo "Creating topic..."
-  kafka-topics --bootstrap-server "$BOOTSTRAP" --create \
-    --topic "$TOPIC" \
-    --partitions "$PARTITIONS" \
-    --replication-factor "$REPLICATION"
-fi
+for t in "${TOPICS[@]}"; do
+  ensure_topic "$t"
+done
 
-echo "Final topic state:"
-kafka-topics --bootstrap-server "$BOOTSTRAP" --describe --topic "$TOPIC"
+echo "Final topic states:"
+for t in "${TOPICS[@]}"; do
+  kafka-topics --bootstrap-server "$BOOTSTRAP" --describe --topic "$t"
+done
+
+echo "✅ Topics ensured: ${TOPICS[*]}"
