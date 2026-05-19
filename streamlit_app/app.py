@@ -82,6 +82,18 @@ with st.sidebar:
     
     st.divider()
     
+    st.subheader("🔗 Links")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("[GitHub](https://github.com/koutilyaY/payguard-realtime-fraud)")
+    with col2:
+        st.markdown("[Docs](https://github.com/koutilyaY/payguard-realtime-fraud#-architecture)")
+    with col3:
+        st.markdown("[API](https://github.com/koutilyaY/payguard-realtime-fraud#-api-documentation)")
+    
+    st.divider()
+    
     st.subheader("📋 System Info")
     st.write("""
     **Status:** ✅ PRODUCTION READY
@@ -91,15 +103,6 @@ with st.sidebar:
     **Region:** AWS us-east-1
     
     **Version:** v4 (MLflow tracked)
-    """)
-    
-    st.divider()
-    
-    st.subheader("🔗 Links")
-    st.markdown("""
-    - [GitHub](https://github.com/koutilyaY/payguard-realtime-fraud)
-    - [Architecture Docs](#)
-    - [API Endpoints](#)
     """)
 
 # ===========================
@@ -645,9 +648,9 @@ with col3:
     st.write("""
     [GitHub Repo](https://github.com/koutilyaY/payguard-realtime-fraud)
     
-    [Performance Metrics](#)
+    [Full Docs](https://github.com/koutilyaY/payguard-realtime-fraud#readme)
     
-    [API Docs](#)
+    [API Reference](https://github.com/koutilyaY/payguard-realtime-fraud#-api-documentation)
     """)
 
 st.markdown("""
