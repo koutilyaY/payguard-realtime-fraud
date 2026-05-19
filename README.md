@@ -81,31 +81,23 @@ MONITORING & ALERTS
 
 ---
 
-## 🎬 Live Demo
+### 💳 **PayGuard - Real-Time Fraud Detection Pipeline**
 
-### **Option 1: Interactive Streamlit Dashboard**
+**Choose Your Demo:**
 
-[🎯 Try the Live Demo](https://payguard-demo.streamlit.app)
+| 📹 GIF Demo | 📊 Metrics & Architecture |
+|---|---|
+| ![PayGuard Live Demo](#) | See detailed metrics below |
+| Shows live fraud detection | Real P50/P99 latency data |
 
-**Features:**
-- Real production metrics (P50/P99 latency, AUC-ROC)
-- Live fraud detection simulation
-- 24-hour historical analysis
-- Interactive Plotly visualizations
-- Delta Lake architecture breakdown
+**Key Metrics:**
+- **P50 latency:** 3.1ms
+- **P99 latency:** 6.7ms  
+- **AUC-ROC:** 1.0
+- **4,708 users** in production
+- **99.9% uptime**
 
-### **Option 2: Local Demo**
-
-```bash
-# Run demo script
-python payguard_demo.py
-
-# Output shows:
-# - 10 transactions flowing through system
-# - 3 fraud types being detected (velocity, high-value, ATM)
-# - Real latency measurements
-# - Production metrics summary
-```
+[View on GitHub](https://github.com/koutilyaY/payguard-realtime-fraud)
 
 ---
 
