@@ -4,6 +4,11 @@ Fraud detection on **real** credit-card transactions, wired through a streaming
 lakehouse: Kafka → Spark Structured Streaming → Delta Lake (bronze/silver/gold) →
 LightGBM → FastAPI + Streamlit.
 
+<p align="center">
+  <img src="assets/hero.png" width="620"><br>
+  <sub>The senior finding: the textbook imbalance fix (<code>scale_pos_weight ≈ 500</code>) collapses the model to PR-AUC 0.24; sqrt-weighting (≈21) is what makes it usable.</sub>
+</p>
+
 The data here is not made up. It's the ULB Credit-Card Fraud Detection dataset —
 284,807 real European card transactions from September 2013, 492 of them
 confirmed frauds (0.172%). The model is trained and evaluated on it. The one
