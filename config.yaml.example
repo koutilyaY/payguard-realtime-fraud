@@ -6,35 +6,20 @@ kafka:
 paths:
   bronze: delta/bronze/txns_v1
   silver: delta/silver/txns_clean_v1
-  gold_features: delta/gold/user_risk_features_v1
+  gold_features: delta/gold/txn_risk_scored_v1
   dq_results: delta/gold/dq_results_v1
   dlq_delta: delta/bronze/dead_letter_v1
-  stream_metrics: delta/gold/stream_metrics_v1
   checkpoints: delta/_checkpoints_v1
+data:
+  csv: data/creditcard.csv
 streaming:
-  trigger: 10 seconds
+  trigger: 2 seconds
   watermark: 5 minutes
   window: 1 minute
 rules:
-  risk_threshold_alert: 0.7
+  # Fallback alert threshold; the stream normally uses the model's baked-in 0.5.
+  risk_threshold_alert: 0.5
   max_amount: 50000
-  currency_allowed:
-  - USD
-  countries_allowed:
-  - US
-  - CA
-  - IN
-  - GB
-  - DE
-  - BR
-  - NG
-  categories_allowed:
-  - retail
-  - digital_goods
-  - travel
-  - gaming
-  - crypto
-  - giftcards
 redis:
   host: localhost
   port: 6379
@@ -46,6 +31,4 @@ postgres:
   user: payguard
   password: CHANGE_ME
 producer:
-  events_per_second: 50
-  sleep_seconds: 0.05
-  edge_case_rate: 0.08
+  sleep_seconds: 0.01

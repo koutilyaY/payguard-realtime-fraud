@@ -3,7 +3,6 @@ import os
 import pickle
 from datetime import datetime, timezone
 
-import pandas as pd
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col,
@@ -31,40 +30,39 @@ logger = get_logger("streaming")
 
 MODEL_PKL_PATH = os.path.join("mlruns", "fraud_model.pkl")
 
+# Feature contract must match src/ml/train_model.py: 28 PCA components + Amount.
+FEATURE_COLS = [f"V{i}" for i in range(1, 29)] + ["Amount"]
 
-def _load_lgb_model():
-    """Load the trained LightGBM model from the local artifact path."""
+
+def _load_model_bundle():
+    """Load the real-data-trained model bundle (model + feature contract +
+    threshold) from the local artifact path."""
     if not os.path.exists(MODEL_PKL_PATH):
         raise FileNotFoundError(
             f"Trained model not found at '{MODEL_PKL_PATH}'. "
-            "Run 'make train' first to train and save the model."
+            "Run 'make train' first to train the real-data model."
         )
     with open(MODEL_PKL_PATH, "rb") as f:
-        return pickle.load(f)
+        bundle = pickle.load(f)
+    # Older artifacts were a bare estimator; new ones are a dict bundle.
+    if not isinstance(bundle, dict):
+        return {"model": bundle, "feature_cols": FEATURE_COLS, "decision_threshold": 0.5}
+    return bundle
 
 
-def _make_fraud_udf(model):
+def _make_fraud_udf(model, feature_cols):
     """
-    Return a pandas_udf that scores windowed features using the LightGBM model.
-    The model is captured in the closure so it is loaded once on the driver
-    and serialized to each executor (works transparently in local Spark mode).
+    Return a pandas_udf that scores a single real transaction (V1..V28 + Amount)
+    with the LightGBM model. The model is captured in the closure so it is loaded
+    once on the driver and serialized to each executor (local Spark mode).
     """
+    import pandas as pd
     from pyspark.sql.functions import pandas_udf
     from pyspark.sql.types import DoubleType as _DoubleType
 
     @pandas_udf(_DoubleType())
-    def fraud_score(
-        txn_cnt: pd.Series,
-        amt_sum: pd.Series,
-        ip_risk_avg: pd.Series,
-        chargeback_cnt: pd.Series,
-    ) -> pd.Series:
-        X = pd.DataFrame({
-            "txn_cnt": txn_cnt.astype(float),
-            "amt_sum": amt_sum.astype(float),
-            "ip_risk_avg": ip_risk_avg.astype(float),
-            "chargeback_cnt": chargeback_cnt.astype(float),
-        })
+    def fraud_score(*cols: pd.Series) -> pd.Series:
+        X = pd.DataFrame({name: cols[i].astype(float) for i, name in enumerate(feature_cols)})
         proba = model.predict_proba(X)[:, 1]
         return pd.Series(proba.clip(0.0, 1.0))
 
@@ -164,13 +162,14 @@ def write_to_redis(rows, redis_cfg, ttl_seconds: int):
     r = redis.Redis(host=redis_cfg["host"], port=int(redis_cfg["port"]), decode_responses=True)
     pipe = r.pipeline(transaction=False)
     for row in rows:
-        user_id = row.get("user_id")
-        if user_id is None:
+        event_id = row.get("event_id")
+        if event_id is None:
             continue
-        key = f"user:{user_id}"
+        key = f"txn:{event_id}"
         payload = json.dumps(
             {
-                "user_id": user_id,
+                "event_id": event_id,
+                "amount": float(row.get("amount", 0.0)),
                 "risk_score": float(row["risk_score"]),
                 "decision": row["decision"],
                 "reasons": row.get("reasons", ""),
@@ -202,7 +201,6 @@ def ensure_cases_table(pg):
     CREATE TABLE IF NOT EXISTS cases (
       case_id TEXT PRIMARY KEY,
       event_id TEXT,
-      user_id INT,
       risk_score DOUBLE PRECISION,
       decision TEXT,
       reasons TEXT,
@@ -232,14 +230,13 @@ def insert_cases(rows, pg):
     for row in rows:
         cur.execute(
             """
-            INSERT INTO cases (case_id, event_id, user_id, risk_score, decision, reasons)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO cases (case_id, event_id, risk_score, decision, reasons)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (case_id) DO NOTHING
             """,
             (
                 row["case_id"],
                 row.get("event_id"),
-                row["user_id"],
                 float(row["risk_score"]),
                 row["decision"],
                 row.get("reasons", ""),
@@ -280,28 +277,26 @@ if __name__ == "__main__":
     )
     spark.sparkContext.setLogLevel("WARN")
 
-    # Load the trained LightGBM model and register as a Spark pandas UDF
-    logger.info(f"Loading LightGBM fraud model from {MODEL_PKL_PATH} ...")
-    _lgb_model = _load_lgb_model()
-    fraud_score_udf = _make_fraud_udf(_lgb_model)
-    logger.info("LightGBM model loaded and UDF registered.")
+    # Load the real-data-trained LightGBM model and register as a Spark pandas UDF
+    logger.info(f"Loading real-data fraud model from {MODEL_PKL_PATH} ...")
+    _bundle = _load_model_bundle()
+    _lgb_model = _bundle["model"]
+    _feature_cols = _bundle.get("feature_cols", FEATURE_COLS)
+    _model_threshold = float(_bundle.get("decision_threshold", RULES["risk_threshold_alert"]))
+    fraud_score_udf = _make_fraud_udf(_lgb_model, _feature_cols)
+    logger.info(f"Model loaded; scoring on {len(_feature_cols)} features, "
+                f"threshold={_model_threshold}.")
 
-    # Schema for incoming JSON
+    # Schema for incoming JSON — real ULB transaction fields replayed by the
+    # producer: event_id/ts wrapper, the 28 PCA components, Amount, and the
+    # ground-truth label (label_fraud) which the model never consumes.
     schema = StructType(
-        [
-            StructField("event_id", StringType(), True),
-            StructField("ts", StringType(), True),
-            StructField("user_id", IntegerType(), True),
-            StructField("merchant_id", IntegerType(), True),
-            StructField("merchant_category", StringType(), True),
-            StructField("amount", DoubleType(), True),
-            StructField("currency", StringType(), True),
-            StructField("country", StringType(), True),
-            StructField("device_type", StringType(), True),
-            StructField("ip_risk_score", DoubleType(), True),
-            StructField("acct_age_days", IntegerType(), True),
-            StructField("chargeback_history", IntegerType(), True),
-        ]
+        [StructField("event_id", StringType(), True),
+         StructField("ts", StringType(), True),
+         StructField("time_offset", DoubleType(), True),
+         StructField("amount", DoubleType(), True)]
+        + [StructField(f"V{i}", DoubleType(), True) for i in range(1, 29)]
+        + [StructField("label_fraud", IntegerType(), True)]
     )
 
     # Kafka raw stream (IMPORTANT: failOnDataLoss=false prevents hard crash when partitions/offsets change)
@@ -328,41 +323,29 @@ if __name__ == "__main__":
         parsed.withColumn("event_id", col("data.event_id"))
         .withColumn("ts", col("data.ts"))
         .withColumn("event_time", to_timestamp(col("data.ts")))  # ISO timestamp
-        .withColumn("user_id", col("data.user_id"))
-        .withColumn("merchant_id", col("data.merchant_id"))
-        .withColumn("merchant_category", col("data.merchant_category"))
+        .withColumn("time_offset", col("data.time_offset"))
         .withColumn("amount", col("data.amount"))
-        .withColumn("currency", col("data.currency"))
-        .withColumn("country", col("data.country"))
-        .withColumn("device_type", col("data.device_type"))
-        .withColumn("ip_risk_score", col("data.ip_risk_score"))
-        .withColumn("acct_age_days", col("data.acct_age_days"))
-        .withColumn("chargeback_history", col("data.chargeback_history"))
-        .drop("data")
+        .withColumn("label_fraud", col("data.label_fraud"))
     )
+    for i in range(1, 29):
+        with_cols = with_cols.withColumn(f"V{i}", col(f"data.V{i}"))
+    with_cols = with_cols.drop("data")
 
-    allowed_currencies = RULES["currency_allowed"]
-    allowed_countries = RULES["countries_allowed"]
-    allowed_categories = RULES["categories_allowed"]
     max_amount = float(RULES["max_amount"])
 
+    # Validation for real ULB transactions: event wrapper present, a parseable
+    # timestamp, a sane non-negative amount, and the 28 PCA features non-null.
+    # (The V-features are PCA outputs and can legitimately be any real number,
+    # so we only null-check them.)
     is_valid = (
         col("event_id").isNotNull()
         & col("event_time").isNotNull()
-        & col("user_id").isNotNull()
-        & col("merchant_id").isNotNull()
         & col("amount").isNotNull()
-        & (col("amount") > lit(0.0))
+        & (col("amount") >= lit(0.0))
         & (col("amount") <= lit(max_amount))
-        & col("currency").isin(allowed_currencies)
-        & col("country").isin(allowed_countries)
-        & col("merchant_category").isin(allowed_categories)
-        & col("ip_risk_score").isNotNull()
-        & (col("ip_risk_score") >= lit(0.0))
-        & (col("ip_risk_score") <= lit(1.0))
-        & col("acct_age_days").isNotNull()
-        & (col("acct_age_days") >= lit(0))
     )
+    for i in range(1, 29):
+        is_valid = is_valid & col(f"V{i}").isNotNull()
 
     valid_df = with_cols.filter(is_valid)
     invalid_df = with_cols.filter(~is_valid).withColumn("dlq_reason", lit("schema_or_rule_violation"))
@@ -389,7 +372,6 @@ if __name__ == "__main__":
             "to_json(named_struct("
             "'event_id', event_id, "
             "'ts', ts, "
-            "'user_id', user_id, "
             "'reason', dlq_reason, "
             "'raw', json_str"
             ")) AS value"
@@ -416,37 +398,18 @@ if __name__ == "__main__":
         .start(PATHS["silver"])
     )
 
-    # ---- GOLD features (windowed aggregates) ----
-    features = (
-        silver.groupBy(window(col("event_time"), STREAM["window"]), col("user_id"))
-        .agg(
-            fcount(lit(1)).alias("txn_cnt"),
-            fsum(col("amount")).alias("amt_sum"),
-            favg(col("ip_risk_score")).alias("ip_risk_avg"),
-            fsum(when(col("chargeback_history") > lit(0), lit(1)).otherwise(lit(0))).alias("chargeback_cnt"),
-        )
-        .withColumnRenamed("window", "w")
-        .withColumn("window_start", col("w.start"))
-        .withColumn("window_end", col("w.end"))
-        .drop("w")
-    )
+    # ---- GOLD: per-transaction scoring ----
+    # The real-data model scores each transaction directly from its 28 PCA
+    # components + Amount (the same contract it was trained on). No windowed
+    # aggregation is needed for scoring; the model IS the decision function.
+    feature_udf_cols = [col(c).cast(DoubleType()) for c in _feature_cols]
 
     scored = (
-        features
-        # LightGBM model replaces the hard-coded weighted formula.
-        # fraud_score_udf returns P(fraud) in [0.0, 1.0] based on the trained model.
-        .withColumn(
-            "risk_score",
-            fraud_score_udf(
-                col("txn_cnt").cast(DoubleType()),
-                col("amt_sum").cast(DoubleType()),
-                col("ip_risk_avg").cast(DoubleType()),
-                col("chargeback_cnt").cast(DoubleType()),
-            ),
-        )
+        silver
+        .withColumn("risk_score", fraud_score_udf(*feature_udf_cols))
         .withColumn(
             "decision",
-            when(col("risk_score") >= lit(float(RULES["risk_threshold_alert"])), lit("REVIEW")).otherwise(lit("ALLOW")),
+            when(col("risk_score") >= lit(_model_threshold), lit("REVIEW")).otherwise(lit("ALLOW")),
         )
         .withColumn(
             "reasons",
@@ -454,13 +417,15 @@ if __name__ == "__main__":
                 """
               concat_ws(
                 ',',
-                case when ip_risk_avg >= 0.8 then 'HIGH_IP_RISK' end,
-                case when txn_cnt >= 15 then 'HIGH_VELOCITY' end,
-                case when amt_sum >= 1500 then 'HIGH_AMOUNT' end
+                case when risk_score >= 0.90 then 'HIGH_MODEL_RISK' end,
+                case when amount >= 1000 then 'HIGH_AMOUNT' end
               )
             """
             ),
         )
+        # window_end drives the "latest per key" upsert and the daily KPI date.
+        .withColumn("window_end", col("event_time"))
+        .withColumn("window_start", col("event_time"))
     )
 
     # ---- GOLD (1) Feature log (append) ----
@@ -473,17 +438,19 @@ if __name__ == "__main__":
     )
 
     # ---- GOLD (2) Business-ready "latest risk per user" (UPSERT) ----
-    # One row per user_id (fast lookups, stable table size).
-    GOLD_LATEST_PATH = "delta/gold/user_risk_latest_v1"
+    # One row per event_id (fast lookups, stable table size).
+    # Keyed on event_id — the ULB dataset has no user identifier; each real
+    # transaction is its own scored entity.
+    GOLD_LATEST_PATH = "delta/gold/txn_risk_latest_v1"
 
     def upsert_gold_latest(batch_df, batch_id: int):
         if batch_df.rdd.isEmpty():
             return
 
-        # If multiple rows per user in the same micro-batch, keep the latest window_end.
-        w = W.partitionBy("user_id").orderBy(col("window_end").desc())
+        w = W.partitionBy("event_id").orderBy(col("window_end").desc())
         latest = (
-            batch_df.select("user_id", "window_start", "window_end", "risk_score", "decision", "reasons")
+            batch_df.select("event_id", "window_start", "window_end", "amount",
+                            "risk_score", "decision", "reasons", "label_fraud")
             .withColumn("_rn", row_number().over(w))
             .filter(col("_rn") == lit(1))
             .drop("_rn")
@@ -500,23 +467,27 @@ if __name__ == "__main__":
 
         (
             tgt.alias("t")
-            .merge(latest.alias("s"), "t.user_id = s.user_id")
+            .merge(latest.alias("s"), "t.event_id = s.event_id")
             .whenMatchedUpdate(
                 set={
                     "last_window_end": "s.last_window_end",
+                    "amount": "s.amount",
                     "risk_score": "s.risk_score",
                     "decision": "s.decision",
                     "reasons": "s.reasons",
+                    "label_fraud": "s.label_fraud",
                     "updated_at": "s.updated_at",
                 }
             )
             .whenNotMatchedInsert(
                 values={
-                    "user_id": "s.user_id",
+                    "event_id": "s.event_id",
                     "last_window_end": "s.last_window_end",
+                    "amount": "s.amount",
                     "risk_score": "s.risk_score",
                     "decision": "s.decision",
                     "reasons": "s.reasons",
+                    "label_fraud": "s.label_fraud",
                     "updated_at": "s.updated_at",
                 }
             )
@@ -599,7 +570,8 @@ if __name__ == "__main__":
 
     alerts_gold_df = (
         scored.filter(col("decision") == lit("REVIEW"))
-        .select("user_id", "window_start", "window_end", "risk_score", "decision", "reasons")
+        .select("event_id", "window_start", "window_end", "amount", "risk_score",
+                "decision", "reasons", "label_fraud")
         .withColumn("processed_at", current_timestamp())
     )
 
@@ -611,11 +583,11 @@ if __name__ == "__main__":
     )
 
     # ---- Alerts (Kafka) ----
-    alerts_df = scored.filter(col("risk_score") >= lit(float(RULES["risk_threshold_alert"]))).selectExpr(
+    alerts_df = scored.filter(col("risk_score") >= lit(_model_threshold)).selectExpr(
         "to_json(named_struct("
-        "'user_id', user_id,"
-        "'window_start', window_start,"
+        "'event_id', event_id,"
         "'window_end', window_end,"
+        "'amount', amount,"
         "'risk_score', risk_score,"
         "'decision', decision,"
         "'reasons', reasons"
@@ -693,7 +665,7 @@ if __name__ == "__main__":
             return
 
         latest = (
-            batch_df.select("user_id", "window_end", "risk_score", "decision", "reasons")
+            batch_df.select("event_id", "window_end", "amount", "risk_score", "decision", "reasons")
             .orderBy(col("window_end").desc())
             .limit(5000)
         )
@@ -702,11 +674,12 @@ if __name__ == "__main__":
 
         rows = []
         for r in latest.collect():  # ✅ no pandas
-            if r["user_id"] is None:
+            if r["event_id"] is None:
                 continue
             rows.append(
                 {
-                    "user_id": int(r["user_id"]),
+                    "event_id": r["event_id"],
+                    "amount": float(r["amount"]) if r["amount"] is not None else 0.0,
                     "risk_score": float(r["risk_score"]) if r["risk_score"] is not None else 0.0,
                     "decision": r["decision"] or "ALLOW",
                     "reasons": r["reasons"] or "",
@@ -717,7 +690,7 @@ if __name__ == "__main__":
         # ---- Fraud rate metrics ----
         try:
             total_records = len(rows)
-            threshold = float(RULES["risk_threshold_alert"])
+            threshold = _model_threshold
             fraud_count = 0
             for _r in rows:
                 if float(_r["risk_score"]) >= threshold:
@@ -741,14 +714,13 @@ if __name__ == "__main__":
         write_to_redis(rows, cfg["redis"], int(cfg["redis"]["ttl_seconds"]))
 
         high = []
-        thr = float(RULES["risk_threshold_alert"])
+        thr = _model_threshold
         for r in rows:
             if float(r["risk_score"]) >= thr:
                 high.append(
                     {
-                        "case_id": f"{r['user_id']}-{r['updated_at']}",
-                        "event_id": None,
-                        "user_id": r["user_id"],
+                        "case_id": f"{r['event_id']}",
+                        "event_id": r["event_id"],
                         "risk_score": r["risk_score"],
                         "decision": "REVIEW",
                         "reasons": r["reasons"],

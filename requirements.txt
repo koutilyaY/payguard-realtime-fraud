@@ -1,5 +1,5 @@
-faker==19.13.0
 pytest>=8.0.0
+pyarrow>=15.0.0
 confluent-kafka==2.3.0
 delta-spark==3.2.0
 redis==5.0.1

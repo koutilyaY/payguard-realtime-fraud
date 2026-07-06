@@ -53,9 +53,6 @@ class TestLoadConfig(unittest.TestCase):
         rules = cfg["rules"]
         self.assertIn("risk_threshold_alert", rules)
         self.assertIn("max_amount", rules)
-        self.assertIn("currency_allowed", rules)
-        self.assertIn("countries_allowed", rules)
-        self.assertIn("categories_allowed", rules)
 
 
 # ── Logger ────────────────────────────────────────────────────────────────────
@@ -80,7 +77,7 @@ class TestLogger(unittest.TestCase):
         self.assertEqual(lg.level, logging.DEBUG)
 
 
-# ── Producer transaction generation ───────────────────────────────────────────
+# ── Producer: real-transaction replay event shape ─────────────────────────────
 
 def _mock_confluent_kafka():
     """Return a sys.modules patch dict for confluent_kafka (not installed locally)."""
@@ -90,11 +87,12 @@ def _mock_confluent_kafka():
     return {"confluent_kafka": mock_ck}
 
 
-class TestGenerateTxn(unittest.TestCase):
+class TestReplayEvent(unittest.TestCase):
+    """The producer replays REAL ULB rows; test the row->event conversion."""
+
     def setUp(self):
         self._mods_patcher = patch.dict("sys.modules", _mock_confluent_kafka())
         self._mods_patcher.start()
-        # Force re-import with mocked confluent_kafka
         for key in list(sys.modules):
             if "produce_txns" in key:
                 del sys.modules[key]
@@ -102,49 +100,40 @@ class TestGenerateTxn(unittest.TestCase):
     def tearDown(self):
         self._mods_patcher.stop()
 
+    def _fake_row(self):
+        row = {"Time": 123.0, "Amount": 42.5, "Class": 1}
+        for i in range(1, 29):
+            row[f"V{i}"] = float(i) * 0.1
+        return row
+
     def _get_mod(self):
         import src.producer.produce_txns as mod
         return mod
 
-    def test_txn_has_required_fields(self):
+    def test_event_has_pca_features_and_amount(self):
         mod = self._get_mod()
-        txn = mod.generate_txn()
-        required = [
-            "event_id", "ts", "user_id", "merchant_id", "merchant_category",
-            "amount", "currency", "country", "device_type",
-            "ip_risk_score", "acct_age_days", "chargeback_history",
-        ]
-        for field in required:
-            self.assertIn(field, txn, f"Missing field: {field}")
+        evt = mod.row_to_event(self._fake_row())
+        for i in range(1, 29):
+            self.assertIn(f"V{i}", evt)
+        self.assertEqual(evt["amount"], 42.5)
 
-    def test_no_label_fraud_field(self):
+    def test_event_carries_ground_truth_label(self):
         mod = self._get_mod()
-        txn = mod.generate_txn()
-        self.assertNotIn("label_fraud", txn)
-
-    def test_ip_risk_score_in_range(self):
-        mod = self._get_mod()
-        for _ in range(100):
-            txn = mod.generate_txn()
-            self.assertGreaterEqual(txn["ip_risk_score"], 0.0)
-            self.assertLessEqual(txn["ip_risk_score"], 1.0)
-
-    def test_chargeback_history_is_binary(self):
-        mod = self._get_mod()
-        for _ in range(50):
-            txn = mod.generate_txn()
-            self.assertIn(txn["chargeback_history"], (0, 1))
+        evt = mod.row_to_event(self._fake_row())
+        # Label rides along for offline measurement; the model never sees it.
+        self.assertEqual(evt["label_fraud"], 1)
 
     def test_event_id_is_uuid(self):
         import uuid
         mod = self._get_mod()
-        txn = mod.generate_txn()
-        uuid.UUID(txn["event_id"])  # raises if not valid UUID
+        evt = mod.row_to_event(self._fake_row())
+        uuid.UUID(evt["event_id"])
 
-    def test_currency_is_usd(self):
+    def test_event_has_timestamp(self):
         mod = self._get_mod()
-        txn = mod.generate_txn()
-        self.assertEqual(txn["currency"], "USD")
+        evt = mod.row_to_event(self._fake_row())
+        self.assertIn("ts", evt)
+        self.assertEqual(evt["time_offset"], 123.0)
 
 
 # ── Streaming helpers ─────────────────────────────────────────────────────────
@@ -215,6 +204,52 @@ class TestStreamingHelpers(unittest.TestCase):
         source = open(path).read()
         count = source.count("GOLD_KPI_DAILY_PATH =")
         self.assertEqual(count, 1, f"GOLD_KPI_DAILY_PATH defined {count} times, expected 1")
+
+
+# ── Real-data training core ───────────────────────────────────────────────────
+
+class TestTimeOrderedSplit(unittest.TestCase):
+    """The core must split by Time (earlier -> train, later -> test), no leakage."""
+
+    def _frame(self):
+        import pandas as pd
+        rows = []
+        for t in range(100):
+            row = {"Time": float(t), "Amount": 10.0, "Class": t % 5 == 0}
+            for i in range(1, 29):
+                row[f"V{i}"] = 0.0
+            rows.append(row)
+        return pd.DataFrame(rows)
+
+    def test_split_is_time_ordered_no_overlap(self):
+        try:
+            from src.ml.train_model import time_ordered_split, TRAIN_FRACTION
+        except ImportError:
+            self.skipTest("training deps (numpy/pandas/lightgbm) not installed")
+        df = self._frame()
+        X_fit, y_fit, X_val, y_val, X_test, y_test, t_split = time_ordered_split(df)
+        # Test set must be strictly the later portion.
+        expected_train = int(len(df) * TRAIN_FRACTION)
+        self.assertEqual(len(y_fit) + len(y_val), expected_train)
+        self.assertEqual(len(y_test), len(df) - expected_train)
+
+    def test_split_requires_time_column(self):
+        try:
+            from src.ml.train_model import time_ordered_split
+        except ImportError:
+            self.skipTest("training deps not installed")
+        df = self._frame().drop(columns=["Time"])
+        with self.assertRaises(ValueError):
+            time_ordered_split(df)
+
+    def test_feature_cols_are_pca_plus_amount(self):
+        try:
+            from src.ml.train_model import FEATURE_COLS
+        except ImportError:
+            self.skipTest("training deps not installed")
+        self.assertEqual(len(FEATURE_COLS), 29)  # V1..V28 + Amount
+        self.assertEqual(FEATURE_COLS[-1], "Amount")
+        self.assertNotIn("Time", FEATURE_COLS)  # Time is a split key, not a feature
 
 
 # ── DQ results writer ─────────────────────────────────────────────────────────
@@ -311,14 +346,15 @@ class TestAPI(unittest.TestCase):
 
     def test_decision_not_found(self):
         client = self._get_app(redis_data=None)
-        resp = client.get("/decision/user/999")
+        resp = client.get("/decision/txn/does-not-exist")
         self.assertEqual(resp.status_code, 200)
         self.assertFalse(resp.json()["found"])
 
     def test_decision_found(self):
-        payload = {"user_id": 42, "risk_score": 0.9, "decision": "REVIEW", "reasons": "HIGH_IP_RISK", "updated_at": "2026-01-01T00:00:00Z"}
+        payload = {"event_id": "abc-123", "risk_score": 0.9, "decision": "REVIEW",
+                   "reasons": "HIGH_MODEL_RISK", "updated_at": "2026-01-01T00:00:00Z"}
         client = self._get_app(redis_data=payload)
-        resp = client.get("/decision/user/42")
+        resp = client.get("/decision/txn/abc-123")
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertTrue(body["found"])
@@ -328,7 +364,7 @@ class TestAPI(unittest.TestCase):
         import sys
         redis_exc = sys.modules["redis"].exceptions.RedisError
         client = self._get_app(redis_raises=redis_exc("conn refused"))
-        resp = client.get("/decision/user/1")
+        resp = client.get("/decision/txn/x")
         self.assertEqual(resp.status_code, 503)
 
     def test_api_no_uvicorn_entry_present(self):

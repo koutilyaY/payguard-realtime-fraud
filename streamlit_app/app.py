@@ -4,7 +4,40 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
+import json
+import os
 import time
+
+
+# Real metrics produced by `make train` on the ULB dataset (time-ordered split).
+# If the file isn't present (e.g. the hosted demo hasn't run training), fall back
+# to the numbers actually observed on the held-out test set, which are committed
+# in the README so they stay honest and in sync.
+_REAL_METRICS_FALLBACK = {
+    "pr_auc": 0.7331,
+    "roc_auc": 0.976,
+    "brier_score": 0.000884,
+    "decision_threshold": 0.5,
+    "precision_at_threshold": 0.5811,
+    "recall_at_threshold": 0.7963,
+    "f1_at_threshold": 0.6719,
+    "tp": 86, "fp": 62, "fn": 22, "tn": 85273,
+    "n_test": 85443, "n_test_frauds": 108,
+}
+
+
+def load_real_metrics():
+    for p in ("mlruns/real_data_metrics.json", "../mlruns/real_data_metrics.json"):
+        if os.path.exists(p):
+            try:
+                with open(p) as f:
+                    return json.load(f), True
+            except Exception:
+                pass
+    return _REAL_METRICS_FALLBACK, False
+
+
+REAL_METRICS, _METRICS_FROM_DISK = load_real_metrics()
 
 # Page config
 st.set_page_config(
@@ -48,14 +81,24 @@ st.markdown("""
 # TITLE & HEADER
 # ===========================
 
-st.markdown("""
+st.markdown(f"""
     <h1 style='text-align: center; color: #ff6b6b;'>
-    🚨 PayGuard - Real-Time Fraud Detection
+    PayGuard - Fraud Detection on Real Card Transactions
     </h1>
     <p style='text-align: center; color: #aaa;'>
-    Sub-7ms latency | 4,708 active users | 20 Docker containers | AUC-ROC 1.0
+    Real ULB dataset (284,807 transactions, 492 frauds) ·
+    time-ordered split · PR-AUC {REAL_METRICS['pr_auc']:.2f} · ROC-AUC {REAL_METRICS['roc_auc']:.3f}
     </p>
     """, unsafe_allow_html=True)
+
+st.info(
+    "The transaction data is **real** — the ULB Credit-Card Fraud Detection "
+    "dataset (Université Libre de Bruxelles), pulled from OpenML. The model is "
+    "trained and evaluated on it with a leak-free time-ordered split. "
+    "The 'stream' is a **replay** of these real transactions, not live production "
+    "traffic. The Simulation tab below is illustrative only.",
+    icon="ℹ️",
+)
 
 st.divider()
 
@@ -70,7 +113,7 @@ with st.sidebar:
     demo_mode = st.radio(
         "Select Demo Mode",
         ["📊 Real Metrics", "🎬 Simulation", "📈 Historical Analysis"],
-        help="Real Metrics: Actual PayGuard metrics\nSimulation: Live fraud scenario\nHistorical: Past 24h data"
+        help="Real Metrics: the model's actual held-out scores on real data\nSimulation: scripted illustration (fake)\nHistorical: illustrative example shapes (fake)"
     )
     
     # Refresh rate
@@ -94,17 +137,18 @@ with st.sidebar:
     
     st.divider()
     
-    st.subheader("📋 System Info")
-    st.write("""
-    **Status:** ✅ PRODUCTION READY
-    
-    **Uptime:** 99.9%
-    
-    **Region:** AWS us-east-1
-    
-    **Version:** v4 (MLflow tracked)
-    
-    **Model:** LightGBM
+    st.subheader("📋 About")
+    src = "loaded from training run" if _METRICS_FROM_DISK else "README-committed values"
+    st.write(f"""
+    **Data:** ULB credit-card fraud (real)
+
+    **Split:** time-ordered (train earlier, test later)
+
+    **Model:** LightGBM, MLflow-tracked
+
+    **Metrics shown:** {src}
+
+    **Stream:** replay of the real transactions
     """)
 
 # ===========================
@@ -113,59 +157,32 @@ with st.sidebar:
 
 if demo_mode == "📊 Real Metrics":
     
-    # KPI Cards
-    st.subheader("📊 Key Performance Indicators")
-    
+    # KPI Cards — the ACTUAL held-out test metrics on real data.
+    st.subheader("📊 Real held-out test metrics (ULB, time-ordered split)")
+    m = REAL_METRICS
+
     col1, col2, col3, col4, col5, col6 = st.columns(6)
-    
     with col1:
-        st.metric(
-            label="P50 Latency",
-            value="3.1ms",
-            delta="vs 50ms SLA",
-            delta_color="inverse"
-        )
-    
+        st.metric("PR-AUC", f"{m['pr_auc']:.3f}", help="Average precision — the headline metric for imbalanced fraud")
     with col2:
-        st.metric(
-            label="P99 Latency",
-            value="6.7ms",
-            delta="vs 100ms SLA",
-            delta_color="inverse"
-        )
-    
+        st.metric("ROC-AUC", f"{m['roc_auc']:.3f}")
     with col3:
-        st.metric(
-            label="AUC-ROC",
-            value="1.0",
-            delta="Perfect separation",
-            delta_color="off"
-        )
-    
+        st.metric(f"Precision @{m['decision_threshold']}", f"{m['precision_at_threshold']*100:.1f}%")
     with col4:
-        st.metric(
-            label="Precision",
-            value="99.8%",
-            delta="+2.3%",
-            delta_color="normal"
-        )
-    
+        st.metric(f"Recall @{m['decision_threshold']}", f"{m['recall_at_threshold']*100:.1f}%")
     with col5:
-        st.metric(
-            label="Active Users",
-            value="4,708",
-            delta="+342 today",
-            delta_color="normal"
-        )
-    
+        st.metric("Brier score", f"{m['brier_score']:.4f}", help="Lower is better — calibration of predicted probabilities")
     with col6:
-        st.metric(
-            label="Uptime",
-            value="99.9%",
-            delta="-0.0% last 7d",
-            delta_color="normal"
-        )
-    
+        st.metric("Test frauds", f"{m['tp']}/{m['n_test_frauds']} caught",
+                  help=f"out of {m['n_test']:,} held-out transactions")
+
+    st.caption(
+        f"Confusion matrix at threshold {m['decision_threshold']}: "
+        f"TP={m['tp']}, FP={m['fp']}, FN={m['fn']}, TN={m['tn']:,}. "
+        "These are the model's actual scores on the later (unseen) portion of the "
+        "real dataset — not a random split, and not fabricated."
+    )
+
     st.divider()
     
     # Real Data Tables
@@ -176,96 +193,45 @@ if demo_mode == "📊 Real Metrics":
     with col1:
         st.markdown("### 🥉 Bronze Layer")
         st.write("""
-        **Raw Events**
-        - Total records: 16,398
-        - Last 5 min: 32 events
-        - Partitions: 10
-        - Status: ✅ Healthy
+        **Raw replayed events**
+        - Real ULB transactions: 284,807
+        - Frauds: 492 (0.172%)
+        - Schema-validated on ingest
         """)
-    
+
     with col2:
         st.markdown("### 🥈 Silver Layer")
         st.write("""
-        **Deduplicated & Cleaned**
-        - Total records: 7,128
-        - Dedup rate: 56.5%
-        - Partitions: 5
-        - Status: ✅ Healthy
+        **Deduplicated & cleaned**
+        - Deduped on event_id (watermarked)
+        - 28 PCA features + Amount kept
+        - Invalid rows routed to DLQ
         """)
-    
+
     with col3:
         st.markdown("### 🥇 Gold Layer")
         st.write("""
-        **Aggregated & Engineered**
-        - Feature tables: 3
-        - User profiles: 4,708
-        - Cache hit rate: 94.2%
-        - Status: ✅ Healthy
+        **Scored per transaction**
+        - LightGBM P(fraud) per event
+        - REVIEW / ALLOW decision
+        - Latest-per-txn upsert table
         """)
-    
+    st.caption("Layer descriptions reflect the pipeline in this repo. Row counts "
+               "in a live run depend on how much of the replay you let through.")
+
     st.divider()
-    
-    # Latency Distribution Chart
-    st.subheader("⚡ API Latency Distribution")
-    
-    # Generate realistic latency data
-    np.random.seed(42)
-    latencies = np.concatenate([
-        np.random.normal(3.1, 0.5, 1000),  # P50 cluster around 3.1ms
-        np.random.normal(6.7, 0.8, 200),    # P99 cluster around 6.7ms
-    ])
-    latencies = np.clip(latencies, 2.5, 15)  # Keep realistic range
-    
-    fig_latency = go.Figure()
-    fig_latency.add_trace(go.Histogram(
-        x=latencies,
-        nbinsx=50,
-        name='API Latency',
-        marker_color='rgba(255, 107, 107, 0.7)',
-        hovertemplate='<b>Latency Range:</b> %{x:.2f}ms<br><b>Count:</b> %{y}<extra></extra>'
-    ))
-    
-    fig_latency.add_vline(
-        x=3.1,
-        line_dash="dash",
-        line_color="green",
-        annotation_text="P50: 3.1ms",
-        annotation_position="top right"
-    )
-    
-    fig_latency.add_vline(
-        x=6.7,
-        line_dash="dash",
-        line_color="orange",
-        annotation_text="P99: 6.7ms",
-        annotation_position="top left"
-    )
-    
-    fig_latency.update_layout(
-        title="API Response Time Distribution (1,200 requests)",
-        xaxis_title="Latency (ms)",
-        yaxis_title="Frequency",
-        hovermode='x unified',
-        template='plotly_dark',
-        height=400
-    )
-    
-    st.plotly_chart(fig_latency, use_container_width=True)
-    
-    st.divider()
-    
-    # Model Performance
-    st.subheader("🧠 LightGBM Model Performance")
-    
+
+    # Model Performance — real confusion matrix from the held-out test set.
+    st.subheader("🧠 LightGBM performance on the real held-out test set")
+
     col1, col2 = st.columns(2)
-    
+
     with col1:
-        # Confusion Matrix
+        # Confusion matrix at the operating threshold (real numbers).
         cm_data = np.array([
-            [3890, 12],      # True Negatives, False Positives
-            [0, 106]         # False Negatives, True Positives
+            [m["tn"], m["fp"]],   # TN, FP
+            [m["fn"], m["tp"]],   # FN, TP
         ])
-        
         fig_cm = go.Figure(data=go.Heatmap(
             z=cm_data,
             x=['Predicted Normal', 'Predicted Fraud'],
@@ -275,85 +241,47 @@ if demo_mode == "📊 Real Metrics":
             colorscale='RdYlGn_r',
             hovertemplate='%{y}<br>%{x}<br>Count: %{z}<extra></extra>'
         ))
-        
         fig_cm.update_layout(
-            title="Confusion Matrix (Test Set: 4,008 samples)",
+            title=f"Confusion Matrix (test set: {m['n_test']:,} real txns, thr={m['decision_threshold']})",
             template='plotly_dark',
             height=400
         )
-        
         st.plotly_chart(fig_cm, use_container_width=True)
     
     with col2:
         # ROC Curve
-        fpr = np.array([0, 0.001, 0.005, 0.01, 0.05, 0.1, 1])
-        tpr = np.array([0, 0.99, 0.995, 0.999, 0.999, 0.999, 1])
-        
-        fig_roc = go.Figure()
-        fig_roc.add_trace(go.Scatter(
-            x=fpr, y=tpr,
-            mode='lines+markers',
-            name='PayGuard Model',
-            line=dict(color='#ff6b6b', width=3),
-            marker=dict(size=8)
+        # Headline metrics as a bar chart (real values).
+        names = ["PR-AUC", "ROC-AUC", f"Precision@{m['decision_threshold']}",
+                 f"Recall@{m['decision_threshold']}", f"F1@{m['decision_threshold']}"]
+        vals = [m["pr_auc"], m["roc_auc"], m["precision_at_threshold"],
+                m["recall_at_threshold"], m["f1_at_threshold"]]
+        fig_bar = go.Figure(go.Bar(
+            x=names, y=vals, marker_color="#ff6b6b",
+            text=[f"{v:.3f}" for v in vals], textposition="outside",
         ))
-        
-        # Random classifier baseline
-        fig_roc.add_trace(go.Scatter(
-            x=[0, 1], y=[0, 1],
-            mode='lines',
-            name='Random Baseline',
-            line=dict(color='gray', width=2, dash='dash')
-        ))
-        
-        fig_roc.update_layout(
-            title="ROC Curve (AUC-ROC: 1.0)",
-            xaxis_title="False Positive Rate",
-            yaxis_title="True Positive Rate",
-            template='plotly_dark',
-            height=400,
-            hovermode='closest'
+        fig_bar.update_layout(
+            title="Real test metrics (0–1)", yaxis_range=[0, 1.05],
+            template="plotly_dark", height=400,
         )
-        
-        st.plotly_chart(fig_roc, use_container_width=True)
+        st.plotly_chart(fig_bar, use_container_width=True)
     
     st.divider()
     
-    # Model Metrics Table
-    st.subheader("📊 Detailed Model Metrics")
-    
-    metrics_data = {
-        'Metric': [
-            'Accuracy',
-            'Precision',
-            'Recall',
-            'F1-Score',
-            'ROC-AUC',
-            'Specificity',
-            'Sensitivity'
-        ],
-        'Value': [
-            '99.7%',
-            '99.8%',
-            '99.1%',
-            '99.4%',
-            '1.0',
-            '99.7%',
-            '99.1%'
-        ],
-        'Threshold': [
-            'N/A',
-            '0.5',
-            '0.5',
-            '0.5',
-            'N/A',
-            '0.5',
-            '0.5'
-        ]
-    }
-    
-    metrics_df = pd.DataFrame(metrics_data)
+    # Model Metrics Table — real numbers.
+    st.subheader("📊 Detailed model metrics (real, held-out test set)")
+    thr = m["decision_threshold"]
+    metrics_df = pd.DataFrame({
+        'Metric': ['PR-AUC (average precision)', 'ROC-AUC', 'Brier score',
+                   'Precision', 'Recall', 'F1-score'],
+        'Value': [f"{m['pr_auc']:.4f}", f"{m['roc_auc']:.4f}", f"{m['brier_score']:.4f}",
+                  f"{m['precision_at_threshold']:.4f}", f"{m['recall_at_threshold']:.4f}",
+                  f"{m['f1_at_threshold']:.4f}"],
+        'Threshold': ['N/A', 'N/A', 'N/A', str(thr), str(thr), str(thr)],
+    })
     st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+    st.caption("PR-AUC is the honest headline for this 0.17%-positive problem — "
+               "ROC-AUC looks high on any imbalanced set. Numbers come from a "
+               "leak-free time-ordered split, so they're modest, not perfect.")
 
 # ===========================
 # SIMULATION MODE
@@ -361,8 +289,10 @@ if demo_mode == "📊 Real Metrics":
 
 elif demo_mode == "🎬 Simulation":
     
-    st.subheader("🎬 Live Fraud Detection Simulation")
-    st.write("Watch real fraud patterns being detected in real-time")
+    st.subheader("🎬 Illustrative fraud-detection animation")
+    st.warning("This tab is a scripted illustration with made-up example "
+               "transactions — it is NOT the real model or real data. For the real "
+               "numbers, use the 'Real Metrics' tab.", icon="⚠️")
     
     # Start button
     if st.button("▶️ Start Live Simulation", key="start_sim"):
@@ -493,7 +423,10 @@ elif demo_mode == "🎬 Simulation":
 elif demo_mode == "📈 Historical Analysis":
     
     st.subheader("📈 24-Hour Historical Analysis")
-    
+    st.warning("Illustrative example data — the shapes below are hand-made to show "
+               "what an operations view could look like. Not measured traffic.",
+               icon="⚠️")
+
     # Generate 24-hour data
     hours = np.arange(0, 24)
     transactions_per_hour = np.array([
@@ -610,9 +543,9 @@ elif demo_mode == "📈 Historical Analysis":
     
     with col5:
         st.metric(
-            "Model Accuracy",
-            "99.7%",
-            "Consistent"
+            "Real PR-AUC",
+            f"{REAL_METRICS['pr_auc']:.3f}",
+            "held-out test"
         )
 
 # ===========================
@@ -627,22 +560,21 @@ with col1:
     st.markdown("### 🏗️ Architecture")
     st.write("""
     **Pipeline:**
-    Kafka (10 partitions) → 
-    PySpark Streaming →
-    Delta Lake (ACID) →
-    LightGBM Model →
-    FastAPI (sub-7ms)
+    Kafka (replay of real txns) →
+    PySpark Structured Streaming →
+    Delta Lake (bronze/silver/gold) →
+    LightGBM per-transaction scoring →
+    Redis + Postgres + FastAPI
     """)
 
 with col2:
-    st.markdown("### 📊 Scale")
+    st.markdown("### 📊 What's real")
     st.write("""
-    **Production Metrics:**
-    - 4,708 active users
-    - 20 Docker containers
-    - 10 Kafka partitions
-    - 99.9% uptime SLA
-    - $0 local cost (Ollama)
+    - Data: **real** ULB fraud dataset
+    - Split: time-ordered (no leakage)
+    - Metrics: the model's actual scores
+    - Stream: a **replay** of the real data
+    - Runs locally; no production traffic
     """)
 
 with col3:
@@ -658,6 +590,6 @@ with col3:
 st.markdown("""
     <hr>
     <p style='text-align: center; color: #999; font-size: 0.9rem;'>
-    PayGuard • Real-Time Fraud Detection • Production Ready
+    PayGuard • fraud detection on the real ULB dataset • streaming demo (replay), not production
     </p>
     """, unsafe_allow_html=True)

@@ -1,91 +1,105 @@
+"""
+Replay the REAL ULB credit-card transactions as a live Kafka stream.
+
+This is the ONLY synthetic thing in the pipeline, and even here the data itself
+is real: we take the actual ULB transactions (Time, V1..V28, Amount, Class),
+sort them by their real elapsed time, and emit them one by one so the streaming
+job has a live feed to score. The "real-time" is a replay of a real, static
+2-day dataset — not live production traffic. The Class label rides along so
+downstream you can measure real detection quality, but the model never sees it.
+
+Run:
+    python -m src.producer.produce_txns              # replay whole dataset
+    REPLAY_LIMIT=5000 python -m src.producer.produce_txns   # first 5k rows
+"""
+
 import json
-import random
+import os
 import time
 import uuid
 from datetime import datetime, timezone
-
-from faker import Faker
-from confluent_kafka import Producer, KafkaException
 
 from src.utils.config import load_config
 from src.utils.logger import get_logger
 
 log = get_logger("producer")
-fake = Faker()
 cfg = load_config()
 
 KAFKA_BOOTSTRAP = cfg["kafka"]["bootstrap_servers"]
 TOPIC = cfg["kafka"]["topic_raw"]
-SLEEP_S = float(cfg["producer"]["sleep_seconds"])
-EDGE_RATE = float(cfg["producer"]["edge_case_rate"])
+SLEEP_S = float(cfg["producer"].get("sleep_seconds", 0.01))
+DATA_CSV = os.path.join("data", "creditcard.csv")
+REPLAY_LIMIT = int(os.getenv("REPLAY_LIMIT", "0"))  # 0 = whole file
 
-MERCHANT_CATS = cfg["rules"]["categories_allowed"]
-COUNTRIES = cfg["rules"]["countries_allowed"]
-DEVICES = ["ios", "android", "web"]
+FEATURE_COLS = [f"V{i}" for i in range(1, 29)] + ["Amount"]
 
-producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP})
 
-def generate_txn():
-    user_id = random.randint(1, 20000)
-    amount = round(random.expovariate(1/35) + 1, 2)  # long-tail amounts
-    country = random.choices(COUNTRIES + ["XX"], weights=[55,8,10,8,6,6,7,0.2])[0]  # rare invalid
-    mcc = random.choice(MERCHANT_CATS)
-    device = random.choice(DEVICES)
-    is_chargeback_history = random.random() < 0.07
+def load_transactions():
+    import pandas as pd
+    if not os.path.exists(DATA_CSV):
+        raise FileNotFoundError(
+            f"Real dataset not found at {DATA_CSV}. "
+            "Run: python scripts/download_data.py"
+        )
+    df = pd.read_csv(DATA_CSV)
+    if "Time" in df.columns:
+        df = df.sort_values("Time", kind="mergesort").reset_index(drop=True)
+    if REPLAY_LIMIT > 0:
+        df = df.head(REPLAY_LIMIT)
+    return df
 
-    # Edge cases for DQ (rare)
-    r = random.random()
-    if r < EDGE_RATE / 3:
-        amount = 0.0
-    elif r < 2 * EDGE_RATE / 3:
-        amount = -round(random.random() * 50, 2)
-    elif r < EDGE_RATE:
-        amount = round(100000 + random.random() * 50000, 2)
 
+def row_to_event(row) -> dict:
+    """Turn one real ULB row into a JSON event for Kafka."""
     evt = {
         "event_id": str(uuid.uuid4()),
         "ts": datetime.now(timezone.utc).isoformat(),
-        "user_id": user_id,
-        "merchant_id": random.randint(1, 5000),
-        "merchant_category": mcc,
-        "amount": amount,
-        "currency": "USD",
-        "country": country,
-        "device_type": device,
-        "ip_risk_score": round(random.random(), 4),
-        "acct_age_days": random.randint(0, 2400),
-        "chargeback_history": int(is_chargeback_history),
-
-        # IMPORTANT: realtime systems do NOT have confirmed fraud labels at tx-time.
-        # We'll add delayed labeling later via a separate labels stream.
-        # "label_fraud": 0
+        "time_offset": float(row["Time"]) if "Time" in row else None,
+        "amount": float(row["Amount"]),
+        # the 28 PCA components, carried through for scoring
+        **{c: float(row[c]) for c in FEATURE_COLS if c != "Amount"},
+        # ground-truth label from the real dataset — for offline measurement only;
+        # the scoring model never receives this field.
+        "label_fraud": int(row["Class"]) if "Class" in row else None,
     }
     return evt
+
 
 def delivery_report(err, msg):
     if err is not None:
         log.error(f"Delivery failed: {err}")
 
+
 if __name__ == "__main__":
-    log.info(f"Producing txns to topic={TOPIC} bootstrap={KAFKA_BOOTSTRAP}")
+    from confluent_kafka import Producer, KafkaException
+
+    producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP})
+    df = load_transactions()
+    log.info(
+        f"Replaying {len(df):,} REAL ULB transactions to topic={TOPIC} "
+        f"bootstrap={KAFKA_BOOTSTRAP} (this is a replay of real data, not live traffic)"
+    )
+    sent = 0
     try:
-        while True:
-            evt = generate_txn()
+        for _, row in df.iterrows():
+            evt = row_to_event(row)
             producer.produce(
                 TOPIC,
                 value=json.dumps(evt).encode("utf-8"),
-                callback=delivery_report
+                callback=delivery_report,
             )
             producer.poll(0)
-            time.sleep(SLEEP_S)
+            sent += 1
+            if sent % 10000 == 0:
+                log.info(f"  replayed {sent:,} / {len(df):,}")
+            if SLEEP_S > 0:
+                time.sleep(SLEEP_S)
+        log.info(f"Replay complete: {sent:,} transactions sent.")
     except KeyboardInterrupt:
-        log.warning("Stopping producer (Ctrl+C)...")
+        log.warning("Stopping replay (Ctrl+C)...")
     except KafkaException as e:
         log.exception(f"Kafka error: {e}")
         raise
-    except Exception as e:
-        log.exception(f"Unexpected error: {e}")
-        raise
     finally:
         producer.flush()
-        log.info("Shutdown complete")
+        log.info("Producer shutdown complete")
