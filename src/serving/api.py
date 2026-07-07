@@ -1,6 +1,7 @@
 import json
 import logging
 from enum import Enum
+from typing import Dict, Optional
 
 import psycopg2
 import redis
@@ -13,6 +14,20 @@ from src.utils.config import load_config
 app = FastAPI()
 cfg = load_config()
 _log = logging.getLogger("api")
+
+# Champion/challenger shadow scorer. Built lazily so the API still starts when no
+# model is trained yet; endpoints that need it return 503 in that case.
+try:
+    from src.mlops.shadow import build_default_scorer
+    _scorer = build_default_scorer()
+except Exception as e:  # pragma: no cover - defensive at import time
+    _log.warning("Shadow scorer unavailable at startup: %s", e)
+    _scorer = None
+
+
+class ScoreRequest(BaseModel):
+    """One transaction's feature vector: {"V1": .., ..., "V28": .., "Amount": ..}."""
+    features: Dict[str, float]
 
 
 class AnalystLabel(str, Enum):
@@ -162,6 +177,60 @@ def get_labeled_cases(limit: int = 100):
             for r in rows
         ],
     }
+
+
+# ── Champion/challenger shadow scoring + rollback ─────────────────────────────
+# Unlike /decision (which reads the Spark stream's Redis snapshot), these score a
+# transaction synchronously through the registry-backed models. The champion
+# (@production) decides; the challenger (@staging) is scored in shadow only.
+
+class RollbackRequest(BaseModel):
+    to_version: Optional[str] = None  # None = roll back to the most recent prior
+
+
+@app.post("/score/shadow")
+def score_shadow(body: ScoreRequest):
+    """Score a transaction. Returns the champion's decision plus, if a challenger
+    is registered, its shadow score and whether the two agree."""
+    if _scorer is None:
+        raise HTTPException(status_code=503, detail="No model registered; train + register first.")
+    try:
+        return _scorer.score(body.features)
+    except KeyError as e:
+        raise HTTPException(status_code=422, detail=f"Missing feature: {e}")
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.get("/shadow/summary")
+def shadow_summary():
+    """Running champion-vs-challenger agreement / alert-rate comparison."""
+    if _scorer is None:
+        raise HTTPException(status_code=503, detail="No model registered.")
+    return _scorer.summary()
+
+
+@app.post("/admin/rollback")
+def admin_rollback(body: RollbackRequest):
+    """One call to point @production back at a prior registered version. The
+    scorer reloads so the change takes effect immediately for /score/shadow."""
+    from src.mlops.registry import rollback
+    try:
+        now_production = rollback(body.to_version)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if _scorer is not None:
+        _scorer.reload()
+    return {"rolled_back": True, "production_version": now_production}
+
+
+@app.post("/admin/reload")
+def admin_reload():
+    """Reload champion/challenger from the registry (after a promotion elsewhere)."""
+    if _scorer is None:
+        raise HTTPException(status_code=503, detail="No model registered.")
+    _scorer.reload()
+    return {"reloaded": True, **_scorer.summary()}
 
 
 if __name__ == "__main__":
