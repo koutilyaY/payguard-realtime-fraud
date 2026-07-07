@@ -1,0 +1,74 @@
+name: mlops-train-and-gate
+
+# Continuous training pipeline. Runs the full loop in a clean environment:
+# train -> register -> evaluate the promotion gate -> promote only if it passes,
+# then run drift detection and the unit tests. It trains on the committed fixture
+# (fixtures/creditcard_sample.csv) so it never needs the ~150 MB dataset download.
+# The fixture inflates the fraud rate on purpose, so CI is a pipeline smoke test,
+# not a metrics benchmark — real headline numbers come from `make train` on the
+# full data.
+
+on:
+  workflow_dispatch:        # on demand from the Actions tab
+  schedule:
+    - cron: "0 6 * * 1"     # weekly refresh, Mondays 06:00 UTC (scheduled retrain)
+  push:
+    paths:                  # re-run the gate when the loop code changes
+      - "src/ml/**"
+      - "src/mlops/**"
+      - "fixtures/**"
+      - ".github/workflows/mlops-train.yml"
+
+jobs:
+  train-gate-drift:
+    runs-on: ubuntu-latest
+    env:
+      MLFLOW_ALLOW_FILE_STORE: "true"
+      PAYGUARD_DATA_CSV: fixtures/creditcard_sample.csv
+      PAYGUARD_CONFIG: config.yaml
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install MLOps dependencies
+        run: pip install -r requirements-mlops.txt
+
+      - name: Provide config
+        run: cp config.yaml.example config.yaml
+
+      - name: Unit tests
+        # Deselect the one Spark-only test class (TestWriteDQ imports pyspark).
+        # CI intentionally excludes the streaming stack; everything else — config,
+        # logging, producer, streaming helpers, training core, API — runs here.
+        run: pytest tests/ -q -k "not TestWriteDQ"
+
+      - name: Train + register + evaluate promotion gate
+        # PAYGUARD_GATE=1 makes train_model register the run and run the gate:
+        # promote to @production only if PR-AUC beats the incumbent by the margin
+        # (or clears the floor when there is no incumbent). Persists to mlruns/,
+        # which is uploaded as an artifact below.
+        env:
+          PAYGUARD_GATE: "1"
+        run: python -m src.ml.train_model
+
+      - name: Registry status
+        run: python -m src.mlops.registry
+
+      - name: Drift detection on the fixture
+        # Real PSI/KS numbers between early and late windows of the fixture. On the
+        # full dataset this is what a scheduled monitor would run to decide whether
+        # to fire the retraining trigger.
+        run: python -m src.mlops.drift --data fixtures/creditcard_sample.csv --json
+
+      - name: Upload MLflow store (registry + metrics)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlruns
+          path: mlruns/
+          retention-days: 7
