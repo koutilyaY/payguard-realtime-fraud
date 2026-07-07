@@ -69,6 +69,47 @@ Why these modeling choices:
 
 ---
 
+## MLOps loop
+
+Around that model is a real training-to-serving loop — registry-gated promotion,
+drift monitoring, an automated retraining trigger, and champion/challenger shadow
+serving with one-command rollback. The pieces are runnable code, verified in a
+fresh venv; the scheduler and pager are the deployment's job and are labelled as
+design. Full walkthrough in [`docs/MLOPS_RUNBOOK.md`](docs/MLOPS_RUNBOOK.md);
+[`docs/MODEL_CARD.md`](docs/MODEL_CARD.md) covers the model itself.
+
+| Piece | Status | Where |
+|---|---|---|
+| Model registry + versioning (MLflow) | **Runs** | `src/mlops/registry.py` |
+| Gated promotion (`@staging` → `@production` on a PR-AUC threshold) | **Runs** | `registry.py::evaluate_gate` |
+| Drift monitoring (PSI + KS, feature + prediction) | **Runs** | `src/mlops/drift.py` |
+| Retraining trigger (drift breach / broad WARN / model age) | **Runs** | `src/mlops/retrain_trigger.py` |
+| Champion/challenger shadow serving + rollback | **Runs** | `src/mlops/shadow.py`, `src/serving/api.py` |
+| CI/CD training pipeline (train → gate → drift, on a fixture) | **Runs** | `.github/workflows/mlops-train.yml` |
+| Scheduler / cron | **Design** | called by CI `schedule:` or Airflow |
+| Pager / webhook | **Design** | drift severity is the alert payload |
+
+MLflow 3 removed the old `Staging`/`Production` *stage* transitions; this uses the
+supported replacement — **aliases** `@staging` and `@production` — with the same
+meaning. Promotion is gated: a challenger becomes production only if its PR-AUC
+clears an absolute floor (0.55) and beats the current production model by a margin
+(0.005). See the runbook.
+
+Quick tour:
+
+```bash
+make train-gate    # train on real data, register, run the promotion gate
+make registry      # show @production champion / @staging challenger
+make drift         # real PSI/KS drift, early vs late windows of the real data
+make trigger       # drift + model age -> retrain / don't-retrain decision
+```
+
+On the full data, drift between the early and late halves is **CRITICAL** (V1 PSI
+1.43, V3 1.38, 8 features over the 0.25 band) while *prediction* drift stays OK
+(PSI 0.06) — a real reason to monitor input and output drift separately.
+
+---
+
 ## Run it — zero-infra path (no Docker)
 
 This trains and evaluates the model on the real data locally. No Kafka, no Spark,
@@ -318,15 +359,26 @@ payguard-realtime-fraud/
 │   ├── producer/produce_txns.py     # replays the real transactions into Kafka
 │   ├── streaming/stream_fraud_pipeline.py  # bronze→silver→gold + DLQ + sinks
 │   ├── ml/
-│   │   ├── train_model.py           # real-data LightGBM training + MLflow
+│   │   ├── train_model.py           # real-data LightGBM training + MLflow + gate hook
 │   │   └── retrain.py               # retrain from analyst-labeled real cases
-│   ├── serving/api.py               # FastAPI: decisions, labeling, health
+│   ├── mlops/                       # the MLOps loop
+│   │   ├── registry.py              # MLflow registry + gated promotion + rollback
+│   │   ├── drift.py                 # PSI/KS feature + prediction drift
+│   │   ├── retrain_trigger.py       # drift/age -> retrain decision
+│   │   └── shadow.py                # champion/challenger shadow scoring
+│   ├── serving/api.py               # FastAPI: decisions, labeling, shadow score, rollback
 │   ├── quality/                     # silver data-quality validation
 │   └── utils/                       # config + logging helpers
+├── .github/workflows/mlops-train.yml # CI: train -> gate -> drift on the fixture
+├── fixtures/creditcard_sample.csv   # small committed slice for fast CI (all 492 frauds)
+├── requirements-mlops.txt           # lean deps for the loop / CI
+├── docs/
+│   ├── MODEL_CARD.md                # the model: data, metrics, gate, limitations
+│   └── MLOPS_RUNBOOK.md             # the loop: what runs vs. design, procedures
 ├── streamlit_app/                   # Streamlit dashboard (shows the real metrics)
-├── tests/test_unit.py
+├── tests/                           # test_unit.py + test_mlops.py
 ├── delta/                           # local Delta tables + checkpoints (generated)
-└── mlruns/                          # MLflow store + fraud_model.pkl (generated)
+└── mlruns/                          # MLflow store + fraud_model.pkl (generated, gitignored)
 ```
 
 ---

@@ -1,4 +1,5 @@
-.PHONY: up down up-all down-all producer stream dq_silver kafka-init api train retrain download
+.PHONY: up down up-all down-all producer stream dq_silver kafka-init api train retrain download \
+        train-gate drift trigger registry ci-fixture
 
 # Use the same compose files everywhere (Kafka + Monitoring)
 COMPOSE = docker compose -f docker/docker-compose.yml -f docker/monitoring/docker-compose.monitoring.yml
@@ -54,3 +55,26 @@ train:
 # Run after labeling cases via POST /label/case/{case_id}, then restart 'make stream'.
 retrain:
 	. .venv/bin/activate && PYTHONPATH=. python -m src.ml.retrain
+
+# ── MLOps loop (see docs/MLOPS_RUNBOOK.md) ────────────────────────────────────
+
+# Train, register the version, and run the promotion gate (promote to @production
+# only if PR-AUC clears the floor / beats the incumbent by the margin).
+train-gate:
+	. .venv/bin/activate && PYTHONPATH=. PAYGUARD_GATE=1 python -m src.ml.train_model
+
+# Feature + prediction drift (PSI/KS) on the real data, early vs late time windows.
+drift:
+	. .venv/bin/activate && PYTHONPATH=. python -m src.mlops.drift
+
+# Evaluate the retraining trigger against current drift + production model age.
+trigger:
+	. .venv/bin/activate && PYTHONPATH=. python -m src.mlops.retrain_trigger
+
+# Show the registry: latest version, @production champion, @staging challenger.
+registry:
+	. .venv/bin/activate && PYTHONPATH=. python -m src.mlops.registry
+
+# Rebuild the small CI fixture from the full dataset.
+ci-fixture:
+	. .venv/bin/activate && PYTHONPATH=. python scripts/make_ci_fixture.py
