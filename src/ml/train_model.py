@@ -47,7 +47,10 @@ from src.utils.logging import get_logger
 
 logger = get_logger("train_model")
 
-DATA_CSV = os.path.join("data", "creditcard.csv")
+# Data path. Defaults to the full real ULB CSV; CI overrides it with
+# PAYGUARD_DATA_CSV=fixtures/creditcard_sample.csv (a small committed slice) so the
+# pipeline can run end-to-end without the ~150 MB download.
+DATA_CSV = os.environ.get("PAYGUARD_DATA_CSV", os.path.join("data", "creditcard.csv"))
 MLRUNS_DIR = "mlruns"
 MODEL_PATH = os.path.join(MLRUNS_DIR, "fraud_model.pkl")
 MODEL_URI_PATH = os.path.join(MLRUNS_DIR, "latest_model_uri.txt")
@@ -223,6 +226,7 @@ def train():
             "val_pr_auc": round(float(val_ap), 4),
             "n_test": int(len(y_test)),
             "n_test_frauds": int(y_test.sum()),
+            "run_id": run_id,
         }
 
         mlflow.log_metrics({
@@ -262,11 +266,13 @@ def train():
         mlflow.log_artifact(MODEL_PATH, artifact_path="artifacts")
         mlflow.log_artifact(METRICS_PATH, artifact_path="artifacts")
 
-        mlflow.lightgbm.log_model(
-            lgb_model=model.booster_,
-            artifact_path="lgb_booster",
-            registered_model_name="payguard_fraud",
-        )
+        # Log the model. When the promotion gate is active (PAYGUARD_GATE=1) we do
+        # NOT auto-register here — register_and_gate() owns registration so exactly
+        # one version is created per run and the gate controls the aliases.
+        log_kwargs = dict(lgb_model=model.booster_, artifact_path="lgb_booster")
+        if os.getenv("PAYGUARD_GATE") != "1":
+            log_kwargs["registered_model_name"] = "payguard_fraud"
+        mlflow.lightgbm.log_model(**log_kwargs)
 
         model_uri = f"runs:/{run_id}/lgb_booster"
         with open(MODEL_URI_PATH, "w") as f:
@@ -275,6 +281,19 @@ def train():
         logger.info(f"Model + feature contract saved to {MODEL_PATH}")
         logger.info(f"Metrics written to {METRICS_PATH}")
         logger.info(f"MLflow run ID: {run_id}")
+
+    # Registry gate. Opt-in (PAYGUARD_GATE=1) so `make train` stays a plain
+    # train-and-inspect step; the CI/CD pipeline and the retrain trigger set it to
+    # run the promotion policy: stage the new version as a challenger, compare its
+    # PR-AUC to the current @production model, promote only if it clears the gate.
+    if os.getenv("PAYGUARD_GATE") == "1":
+        from src.mlops.registry import register_and_gate
+        verdict = register_and_gate(run_id)
+        metrics["gate"] = verdict.as_dict()
+        logger.info(
+            f"Promotion gate: promoted={verdict.promoted} "
+            f"(v{verdict.candidate_version}, PR-AUC={verdict.candidate_metric}) — {verdict.reason}"
+        )
 
     return MODEL_PATH, metrics
 
